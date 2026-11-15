@@ -72,7 +72,7 @@ export function MessageFeed({
 
   return (
     <div
-      className="flex-1 overflow-y-auto px-4 sm:px-6 py-5 space-y-4"
+      className="flex-1 overflow-y-auto px-3 sm:px-6 py-3.5 sm:py-5 space-y-3 sm:space-y-4"
       data-testid="message-feed"
       aria-live="polite"
     >
@@ -111,7 +111,7 @@ export function MessageFeed({
           <article
             key={msg.id}
             data-testid="chat-message-card"
-            className={`rounded-2xl border p-4 sm:p-5 transition-colors shadow-xs ${
+            className={`rounded-2xl border p-3.5 sm:p-5 transition-colors shadow-xs ${
               isSelf
                 ? 'border-indigo-200/80 dark:border-indigo-900/70 bg-white/95 dark:bg-slate-900/95'
                 : 'border-slate-200 dark:border-slate-800 bg-white/95 dark:bg-slate-900/95'

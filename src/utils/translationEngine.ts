@@ -9,6 +9,50 @@ import type {
 } from '../types/easytalk';
 
 const localTranslationCache = new Map<string, string>();
+const inFlightTranslations = new Map<string, Promise<TranslationEntry>>();
+const PERSISTED_TX_KEY = 'easytalk_tx_cache_v1';
+const PERSISTED_TX_MAX = 250;
+let storageCacheHydrated = false;
+
+function hydratePersistedCache(): void {
+  if (storageCacheHydrated || typeof window === 'undefined') return;
+  storageCacheHydrated = true;
+  try {
+    const raw = window.localStorage.getItem(PERSISTED_TX_KEY);
+    if (!raw) return;
+    const entries = JSON.parse(raw) as Array<[string, string]>;
+    if (Array.isArray(entries)) {
+      for (const [k, v] of entries) {
+        if (typeof k === 'string' && typeof v === 'string') {
+          localTranslationCache.set(k, v);
+        }
+      }
+    }
+  } catch {
+    // Ignore storage read issues
+  }
+}
+
+function persistLocalCache(): void {
+  if (typeof window === 'undefined') return;
+  try {
+    const entries = Array.from(localTranslationCache.entries()).slice(-PERSISTED_TX_MAX);
+    window.localStorage.setItem(PERSISTED_TX_KEY, JSON.stringify(entries));
+  } catch {
+    // Ignore quota issues
+  }
+}
+
+function buildCacheKey(sourceLang: string, targetLang: string, normalizedText: string): string {
+  const srcIso = getLanguageByCode(sourceLang).isoCode;
+  const tgtIso = getLanguageByCode(targetLang).isoCode;
+  return `${srcIso}|${tgtIso}|${normalizedText}`;
+}
+
+export function clearLocalTranslationCacheForTest(): void {
+  localTranslationCache.clear();
+  inFlightTranslations.clear();
+}
 
 const ROOM_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
 
@@ -73,12 +117,15 @@ export function lookupCachedPhrase(
   sourceLang: string,
   targetLang: string,
 ): string | null {
+  hydratePersistedCache();
   const normalized = text.trim().toLowerCase();
   if (!normalized) return null;
 
-  // 1. Check runtime memory cache
-  const cacheKey = `${sourceLang}|${targetLang}|${normalized}`;
-  const memHit = localTranslationCache.get(cacheKey);
+  // 1. Check runtime memory + persisted cache (ISO normalized + exact code fallback)
+  const isoKey = buildCacheKey(sourceLang, targetLang, normalized);
+  const memHit =
+    localTranslationCache.get(isoKey) ??
+    localTranslationCache.get(`${sourceLang}|${targetLang}|${normalized}`);
   if (memHit) return memHit;
 
   // 2. Check pre-loaded Smart Phrase & Domain Dictionary across all languages
@@ -109,9 +156,16 @@ export function cacheTranslation(
   targetLang: string,
   translatedText: string,
 ): void {
+  hydratePersistedCache();
   const normalized = text.trim().toLowerCase();
   if (!normalized || !translatedText.trim()) return;
-  localTranslationCache.set(`${sourceLang}|${targetLang}|${normalized}`, translatedText);
+  const isoKey = buildCacheKey(sourceLang, targetLang, normalized);
+  localTranslationCache.set(isoKey, translatedText);
+  if (localTranslationCache.size > PERSISTED_TX_MAX) {
+    const oldestKey = localTranslationCache.keys().next().value;
+    if (oldestKey) localTranslationCache.delete(oldestKey);
+  }
+  persistLocalCache();
 }
 
 export async function translateText(params: {
@@ -148,12 +202,12 @@ export async function translateText(params: {
     };
   }
 
-  // Tier 2: Instant Smart Phrase & Dictionary Cache
+  // Tier 2: Instant Smart Phrase & Persisted Memory Cache
   if (enginePreference !== 'cloud-proxy') {
     const cachedHit = lookupCachedPhrase(cleanText, sourceLang, targetLang);
     if (cachedHit) {
       const elapsed = Math.max(
-        4,
+        2,
         Math.round((typeof performance !== 'undefined' ? performance.now() : Date.now()) - startedAt),
       );
       return {
@@ -165,83 +219,115 @@ export async function translateText(params: {
     }
   }
 
-  // Tier 1 / Tier 3: Server-Side Translation Proxy (/api/translate)
-  try {
-    const response = await fetch('/api/translate', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        text: cleanText,
-        sourceLang,
-        targetLang,
-        domainMode,
-        enginePreference,
-      }),
-    });
-
-    if (response.ok) {
-      const data = (await response.json()) as {
-        translatedText?: string;
-        provider?: string;
-        latencyMs?: number;
-      };
-      if (data.translatedText && data.translatedText.trim()) {
-        cacheTranslation(cleanText, sourceLang, targetLang, data.translatedText);
-        const elapsed = Math.max(
-          12,
-          Math.round((typeof performance !== 'undefined' ? performance.now() : Date.now()) - startedAt),
-        );
-        return {
-          translatedText: data.translatedText,
-          provider: data.provider ?? 'Live Translation API',
-          latencyMs: data.latencyMs ?? elapsed,
-          cached: false,
-        };
-      }
-    }
-  } catch {
-    // Fall through to direct MyMemory browser fetch if proxy is unavailable
+  const dedupeKey = `${buildCacheKey(sourceLang, targetLang, cleanText.toLowerCase())}|${enginePreference}|${domainMode}`;
+  const existingFlight = inFlightTranslations.get(dedupeKey);
+  if (existingFlight) {
+    return existingFlight;
   }
 
-  // Browser-direct MyMemory API fallback
-  try {
-    const mmUrl = `https://api.mymemory.translated.net/get?q=${encodeURIComponent(
-      cleanText,
-    )}&langpair=${encodeURIComponent(`${srcIso}|${tgtIso}`)}`;
-    const mmRes = await fetch(mmUrl);
-    if (mmRes.ok) {
-      const mmJson = (await mmRes.json()) as {
-        responseData?: { translatedText?: string };
-      };
-      const candidate = mmJson.responseData?.translatedText?.trim();
-      if (candidate && !candidate.toUpperCase().includes('MYMEMORY WARNING')) {
-        cacheTranslation(cleanText, sourceLang, targetLang, candidate);
-        const elapsed = Math.max(
-          20,
-          Math.round((typeof performance !== 'undefined' ? performance.now() : Date.now()) - startedAt),
-        );
-        return {
-          translatedText: candidate,
-          provider: 'MyMemory Live',
-          latencyMs: elapsed,
-          cached: false,
+  const promise = (async (): Promise<TranslationEntry> => {
+    let proxyErrored = false;
+
+    // Tier 1 / Tier 3: Server-Side Translation Proxy (/api/translate)
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 3800);
+    try {
+      const response = await fetch('/api/translate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        signal: controller.signal,
+        body: JSON.stringify({
+          text: cleanText,
+          sourceLang,
+          targetLang,
+          domainMode,
+          enginePreference,
+        }),
+      });
+
+      if (response.ok) {
+        const data = (await response.json()) as {
+          translatedText?: string;
+          provider?: string;
+          latencyMs?: number;
         };
+        if (data.translatedText && data.translatedText.trim()) {
+          if (data.provider !== 'Passthrough Fallback') {
+            cacheTranslation(cleanText, sourceLang, targetLang, data.translatedText);
+          }
+          const elapsed = Math.max(
+            8,
+            Math.round((typeof performance !== 'undefined' ? performance.now() : Date.now()) - startedAt),
+          );
+          return {
+            translatedText: data.translatedText,
+            provider: data.provider ?? 'Live Translation API',
+            latencyMs: data.latencyMs ?? elapsed,
+            cached: false,
+          };
+        }
+      } else {
+        proxyErrored = true;
+      }
+    } catch {
+      proxyErrored = true;
+    } finally {
+      clearTimeout(timer);
+    }
+
+    // Browser-direct MyMemory API fallback only if server proxy failed/timed out
+    if (proxyErrored) {
+      const mmController = new AbortController();
+      const mmTimer = setTimeout(() => mmController.abort(), 2500);
+      try {
+        const mmUrl = `https://api.mymemory.translated.net/get?q=${encodeURIComponent(
+          cleanText,
+        )}&langpair=${encodeURIComponent(`${srcIso}|${tgtIso}`)}`;
+        const mmRes = await fetch(mmUrl, { signal: mmController.signal });
+        if (mmRes.ok) {
+          const mmJson = (await mmRes.json()) as {
+            responseData?: { translatedText?: string };
+          };
+          const candidate = mmJson.responseData?.translatedText?.trim();
+          if (candidate && !candidate.toUpperCase().includes('MYMEMORY WARNING')) {
+            cacheTranslation(cleanText, sourceLang, targetLang, candidate);
+            const elapsed = Math.max(
+              15,
+              Math.round((typeof performance !== 'undefined' ? performance.now() : Date.now()) - startedAt),
+            );
+            return {
+              translatedText: candidate,
+              provider: 'MyMemory Live',
+              latencyMs: elapsed,
+              cached: false,
+            };
+          }
+        }
+      } catch {
+        // Final safe fallback below
+      } finally {
+        clearTimeout(mmTimer);
       }
     }
-  } catch {
-    // Final safe fallback below
-  }
 
-  const elapsed = Math.max(
-    15,
-    Math.round((typeof performance !== 'undefined' ? performance.now() : Date.now()) - startedAt),
-  );
-  return {
-    translatedText: cleanText,
-    provider: 'Original Fallback',
-    latencyMs: elapsed,
-    cached: false,
-  };
+    const elapsed = Math.max(
+      12,
+      Math.round((typeof performance !== 'undefined' ? performance.now() : Date.now()) - startedAt),
+    );
+    return {
+      translatedText: cleanText,
+      provider: 'Original Fallback',
+      latencyMs: elapsed,
+      cached: false,
+    };
+  })();
+
+  inFlightTranslations.set(dedupeKey, promise);
+  try {
+    return await promise;
+  } finally {
+    inFlightTranslations.delete(dedupeKey);
+  }
 }
 
 export function shouldShowEnglishSubtitle(

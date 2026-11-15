@@ -1,6 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  cacheTranslation,
+  clearLocalTranslationCacheForTest,
   detectLanguageFromText,
   formatTranscriptJson,
   formatTranscriptText,
@@ -8,6 +10,7 @@ import {
   lookupCachedPhrase,
   normalizeRoomCode,
   shouldShowEnglishSubtitle,
+  translateText,
 } from './translationEngine.ts';
 import type { ChatMessage, RoomParticipant } from '../types/easytalk.ts';
 
@@ -110,4 +113,18 @@ test('formatTranscriptText and formatTranscriptJson produce complete structured 
   assert.equal(json.roomCode, 'ET4829');
   assert.equal(json.messages.length, 1);
   assert.equal(json.messages[0].translations['en-IN'].translatedText, 'Hello');
+});
+
+test('cacheTranslation and translateText resolve repeated phrases instantaneously via ISO cache', async () => {
+  clearLocalTranslationCacheForTest();
+  cacheTranslation('How far is the station?', 'en-IN', 'te-IN', 'రైల్వే స్టేషన్ ఎంత దూరంలో ఉంది?');
+  const hit = await translateText({
+    text: '  how far is the station?  ',
+    sourceLang: 'en-US',
+    targetLang: 'te-IN',
+  });
+  assert.equal(hit.translatedText, 'రైల్వే స్టేషన్ ఎంత దూరంలో ఉంది?');
+  assert.equal(hit.provider, 'Smart Phrase Cache');
+  assert.equal(hit.cached, true);
+  clearLocalTranslationCacheForTest();
 });

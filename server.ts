@@ -62,13 +62,57 @@ function broadcastToRoom(roomCode: string, payload: unknown, excludeWs?: WebSock
   }
 }
 
+const SERVER_TX_CACHE_MAX = 1000;
+const serverTranslationCache = new Map<string, { translatedText: string; provider: string }>();
+
+function getServerCachedTranslation(
+  sourceLang: string,
+  targetLang: string,
+  text: string,
+): { translatedText: string; provider: string } | null {
+  const key = `${sourceLang}|${targetLang}|${text.trim().toLowerCase()}`;
+  const hit = serverTranslationCache.get(key);
+  if (!hit) return null;
+  // Refresh LRU recency
+  serverTranslationCache.delete(key);
+  serverTranslationCache.set(key, hit);
+  return hit;
+}
+
+function setServerCachedTranslation(
+  sourceLang: string,
+  targetLang: string,
+  text: string,
+  translatedText: string,
+  provider: string,
+): void {
+  const clean = text.trim().toLowerCase();
+  if (!clean || !translatedText.trim()) return;
+  const key = `${sourceLang}|${targetLang}|${clean}`;
+  if (serverTranslationCache.size >= SERVER_TX_CACHE_MAX) {
+    const oldestKey = serverTranslationCache.keys().next().value;
+    if (oldestKey) serverTranslationCache.delete(oldestKey);
+  }
+  serverTranslationCache.set(key, { translatedText, provider });
+}
+
+let cachedGeminiClient: GoogleGenAI | null = null;
+function getGeminiClient(): GoogleGenAI | null {
+  const apiKey = process.env.GEMINI_API_KEY;
+  if (!apiKey || apiKey === 'MY_GEMINI_API_KEY') return null;
+  if (!cachedGeminiClient) {
+    cachedGeminiClient = new GoogleGenAI({ apiKey });
+  }
+  return cachedGeminiClient;
+}
+
 async function translateWithMyMemory(
   text: string,
   srcIso: string,
   tgtIso: string,
 ): Promise<string | null> {
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 4500);
+  const timer = setTimeout(() => controller.abort(), 2200);
   try {
     const url = `https://api.mymemory.translated.net/get?q=${encodeURIComponent(
       text,
@@ -97,7 +141,7 @@ async function translateWithLingva(
   tgtIso: string,
 ): Promise<string | null> {
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 4500);
+  const timer = setTimeout(() => controller.abort(), 2200);
   try {
     const src = srcIso === 'zh-CN' ? 'zh' : srcIso;
     const tgt = tgtIso === 'zh-CN' ? 'zh' : tgtIso;
@@ -115,6 +159,32 @@ async function translateWithLingva(
   }
 }
 
+async function racePublicTranslators(
+  text: string,
+  srcIso: string,
+  tgtIso: string,
+): Promise<{ translatedText: string; provider: string } | null> {
+  const wrap = async (
+    promise: Promise<string | null>,
+    provider: string,
+  ): Promise<{ translatedText: string; provider: string }> => {
+    const translated = await promise;
+    if (!translated) {
+      throw new Error(`${provider} empty`);
+    }
+    return { translatedText: translated, provider };
+  };
+
+  try {
+    return await Promise.any([
+      wrap(translateWithMyMemory(text, srcIso, tgtIso), 'MyMemory Live'),
+      wrap(translateWithLingva(text, srcIso, tgtIso), 'Lingva Live'),
+    ]);
+  } catch {
+    return null;
+  }
+}
+
 async function translateWithGoogleCloud(
   text: string,
   srcIso: string,
@@ -122,12 +192,15 @@ async function translateWithGoogleCloud(
 ): Promise<string | null> {
   const key = process.env.GOOGLE_TRANSLATE_API_KEY;
   if (!key) return null;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 2500);
   try {
     const res = await fetch(
       `https://translation.googleapis.com/language/translate/v2?key=${encodeURIComponent(key)}`,
       {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
+        signal: controller.signal,
         body: JSON.stringify({
           q: text,
           source: srcIso === 'zh-CN' ? 'zh-CN' : srcIso,
@@ -143,6 +216,8 @@ async function translateWithGoogleCloud(
     return data.data?.translations?.[0]?.translatedText?.trim() || null;
   } catch {
     return null;
+  } finally {
+    clearTimeout(timer);
   }
 }
 
@@ -152,10 +227,9 @@ async function translateWithGeminiServer(
   targetLangName: string,
   domainMode: DomainMode,
 ): Promise<string | null> {
-  const apiKey = process.env.GEMINI_API_KEY;
-  if (!apiKey || apiKey === 'MY_GEMINI_API_KEY') return null;
+  const ai = getGeminiClient();
+  if (!ai) return null;
   try {
-    const ai = new GoogleGenAI({ apiKey });
     const response = await ai.models.generateContent({
       model: 'gemini-2.5-flash',
       contents: `Translate the following ${domainMode} conversation utterance from ${sourceLangName} to ${targetLangName}. Return ONLY the natural, accurate translation in ${targetLangName} without quotes, notes, or explanations:\n\n${text}`,
@@ -175,6 +249,7 @@ async function startServer(): Promise<void> {
       ok: true,
       activeRooms: rooms.size,
       connectedClients: clients.size,
+      cachedTranslations: serverTranslationCache.size,
     });
   });
 
@@ -218,7 +293,17 @@ async function startServer(): Promise<void> {
         res.json({
           translatedText: cached,
           provider: 'Smart Phrase Cache',
-          latencyMs: Math.max(4, Date.now() - started),
+          latencyMs: Math.max(2, Date.now() - started),
+        });
+        return;
+      }
+
+      const memHit = getServerCachedTranslation(srcInfo.isoCode, tgtInfo.isoCode, text);
+      if (memHit) {
+        res.json({
+          translatedText: memHit.translatedText,
+          provider: `${memHit.provider} (Cached)`,
+          latencyMs: Math.max(1, Date.now() - started),
         });
         return;
       }
@@ -228,6 +313,13 @@ async function startServer(): Promise<void> {
     if (enginePreference === 'cloud-proxy') {
       const cloudResult = await translateWithGoogleCloud(text, srcInfo.isoCode, tgtInfo.isoCode);
       if (cloudResult) {
+        setServerCachedTranslation(
+          srcInfo.isoCode,
+          tgtInfo.isoCode,
+          text,
+          cloudResult,
+          'Google Cloud Proxy',
+        );
         res.json({
           translatedText: cloudResult,
           provider: 'Google Cloud Proxy',
@@ -242,6 +334,13 @@ async function startServer(): Promise<void> {
         domainMode,
       );
       if (geminiResult) {
+        setServerCachedTranslation(
+          srcInfo.isoCode,
+          tgtInfo.isoCode,
+          text,
+          geminiResult,
+          'Neural Context Proxy',
+        );
         res.json({
           translatedText: geminiResult,
           provider: 'Neural Context Proxy',
@@ -251,23 +350,19 @@ async function startServer(): Promise<void> {
       }
     }
 
-    // Tier 1: Live Free MyMemory API
-    const mmResult = await translateWithMyMemory(text, srcInfo.isoCode, tgtInfo.isoCode);
-    if (mmResult) {
+    // Tier 1: Race MyMemory and Lingva in parallel for lowest latency
+    const raced = await racePublicTranslators(text, srcInfo.isoCode, tgtInfo.isoCode);
+    if (raced) {
+      setServerCachedTranslation(
+        srcInfo.isoCode,
+        tgtInfo.isoCode,
+        text,
+        raced.translatedText,
+        raced.provider,
+      );
       res.json({
-        translatedText: mmResult,
-        provider: 'MyMemory Live',
-        latencyMs: Date.now() - started,
-      });
-      return;
-    }
-
-    // Tier 1B: Lingva Public Endpoint Fallback
-    const lingvaResult = await translateWithLingva(text, srcInfo.isoCode, tgtInfo.isoCode);
-    if (lingvaResult) {
-      res.json({
-        translatedText: lingvaResult,
-        provider: 'Lingva Live',
+        translatedText: raced.translatedText,
+        provider: raced.provider,
         latencyMs: Date.now() - started,
       });
       return;
@@ -281,6 +376,13 @@ async function startServer(): Promise<void> {
       domainMode,
     );
     if (geminiFallback) {
+      setServerCachedTranslation(
+        srcInfo.isoCode,
+        tgtInfo.isoCode,
+        text,
+        geminiFallback,
+        'Neural Context Proxy',
+      );
       res.json({
         translatedText: geminiFallback,
         provider: 'Neural Context Proxy',

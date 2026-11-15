@@ -75,6 +75,7 @@ export default function App() {
 
   const transportRef = useRef<UnifiedRoomTransport | null>(null);
   const spokenMessageIdsRef = useRef<Set<string>>(new Set());
+  const inFlightMsgIdsRef = useRef<Set<string>>(new Set());
   const companionTurnIndexRef = useRef<Record<string, number>>({});
 
   // Sync Tailwind dark class on <html>
@@ -180,6 +181,7 @@ export default function App() {
         : speaker.languageCode;
 
       const messageId = `msg-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+      inFlightMsgIdsRef.current.add(messageId);
       const baseMsg: ChatMessage = {
         id: messageId,
         roomCode,
@@ -196,25 +198,29 @@ export default function App() {
       // Optimistically render immediately
       setMessages((prev) => mergeMessagesIdempotently(prev, [baseMsg]));
 
-      const targetLanguages = [
-        hearingLanguageRef.current,
-        ...participants.map((p) => p.languageCode),
-      ];
-      if (
-        shouldShowEnglishSubtitle(
-          detectedLang,
+      try {
+        const targetLanguages = [
           hearingLanguageRef.current,
-          settingsRef.current.showEnglishSubtitles,
-        )
-      ) {
-        targetLanguages.push('en-IN');
+          ...participants.map((p) => p.languageCode),
+        ];
+        if (
+          shouldShowEnglishSubtitle(
+            detectedLang,
+            hearingLanguageRef.current,
+            settingsRef.current.showEnglishSubtitles,
+          )
+        ) {
+          targetLanguages.push('en-IN');
+        }
+
+        const enriched = await translateMessageForLanguages(baseMsg, targetLanguages);
+
+        setMessages((prev) => mergeMessagesIdempotently(prev, [enriched]));
+        transportRef.current?.sendMessage(enriched);
+        speakTranslatedIfNeeded(enriched);
+      } finally {
+        inFlightMsgIdsRef.current.delete(messageId);
       }
-
-      const enriched = await translateMessageForLanguages(baseMsg, targetLanguages);
-
-      setMessages((prev) => mergeMessagesIdempotently(prev, [enriched]));
-      transportRef.current?.sendMessage(enriched);
-      speakTranslatedIfNeeded(enriched);
     },
     [activeSpeaker, participants, roomCode, speakTranslatedIfNeeded, translateMessageForLanguages],
   );
@@ -246,6 +252,7 @@ export default function App() {
 
     const neededLangsPerMessage = new Map<string, string[]>();
     for (const m of messages) {
+      if (inFlightMsgIdsRef.current.has(m.id)) continue;
       const needed: string[] = [];
       const srcIso = getLanguageByCode(m.senderLanguage).isoCode;
       const hearIso = getLanguageByCode(hearingLanguage).isoCode;
@@ -591,7 +598,7 @@ export default function App() {
         />
       ) : (
         <div
-          className="h-screen flex flex-col bg-slate-100 dark:bg-slate-950 text-slate-900 dark:text-slate-100 overflow-hidden"
+          className="h-dvh flex flex-col bg-slate-100 dark:bg-slate-950 text-slate-900 dark:text-slate-100 overflow-hidden"
           data-testid="live-room-view"
         >
           <RoomHeader

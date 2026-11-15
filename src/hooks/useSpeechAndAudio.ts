@@ -69,8 +69,26 @@ export function useSpeechAndAudio({
   const analyserRef = useRef<AnalyserNode | null>(null);
   const rafRef = useRef<number | null>(null);
   const wantListeningRef = useRef(false);
+  const voicesRef = useRef<SpeechSynthesisVoice[]>([]);
   const onFinalRef = useRef(onFinalTranscript);
   onFinalRef.current = onFinalTranscript;
+
+  // Warm up SpeechSynthesis voices immediately + listen for voiceschanged
+  useEffect(() => {
+    if (typeof window === 'undefined' || !('speechSynthesis' in window)) return;
+    const loadVoices = () => {
+      try {
+        voicesRef.current = window.speechSynthesis.getVoices();
+      } catch {
+        // Ignore
+      }
+    };
+    loadVoices();
+    window.speechSynthesis.addEventListener?.('voiceschanged', loadVoices);
+    return () => {
+      window.speechSynthesis.removeEventListener?.('voiceschanged', loadVoices);
+    };
+  }, []);
 
   // Check browser support & initial microphone permission status
   useEffect(() => {
@@ -123,14 +141,18 @@ export function useSpeechAndAudio({
     setAudioBars(new Array(18).fill(0.14));
   }, []);
 
-  const startVisualizer = useCallback(async (): Promise<boolean> => {
+  const startVisualizer = useCallback(async (suppressErrors = false): Promise<boolean> => {
     if (!navigator.mediaDevices?.getUserMedia) {
-      setPermissionState('unsupported');
+      if (!suppressErrors) setPermissionState('unsupported');
       return false;
     }
 
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      if (!wantListeningRef.current && suppressErrors) {
+        stream.getTracks().forEach((t) => t.stop());
+        return true;
+      }
       mediaStreamRef.current = stream;
       setPermissionState('granted');
       setMicErrorMessage(null);
@@ -167,6 +189,10 @@ export function useSpeechAndAudio({
       rafRef.current = requestAnimationFrame(tick);
       return true;
     } catch (err) {
+      if (suppressErrors) {
+        // On some mobile browsers SpeechRecognition holds audio focus exclusively; keep recognition active
+        return false;
+      }
       const message = err instanceof Error ? err.message : 'Microphone access was blocked.';
       if (message.toLowerCase().includes('denied') || message.toLowerCase().includes('notallowed')) {
         setPermissionState('denied');
@@ -199,16 +225,10 @@ export function useSpeechAndAudio({
     setMicErrorMessage(null);
     wantListeningRef.current = true;
 
-    const micOk = await startVisualizer();
-    if (!micOk && !window.SpeechRecognition && !window.webkitSpeechRecognition) {
-      wantListeningRef.current = false;
-      setIsListening(false);
-      return;
-    }
-
     const SpeechCtor = window.SpeechRecognition || window.webkitSpeechRecognition;
     if (!SpeechCtor) {
       setSpeechSupported(false);
+      const micOk = await startVisualizer(false);
       if (micOk) {
         setIsListening(true);
         setMicErrorMessage(
@@ -221,6 +241,7 @@ export function useSpeechAndAudio({
     }
 
     try {
+      // Start SpeechRecognition immediately inside user gesture (critical for iOS/Android low latency)
       const recognition = new SpeechCtor();
       recognition.continuous = true;
       recognition.interimResults = true;
@@ -273,6 +294,10 @@ export function useSpeechAndAudio({
       recognitionRef.current = recognition;
       recognition.start();
       setIsListening(true);
+      setPermissionState('granted');
+
+      // Start audio waveform visualizer concurrently without blocking speech recognition
+      void startVisualizer(true);
     } catch {
       setMicErrorMessage('Unable to start browser Speech Recognition. Type or tap Quick Phrases below.');
       stopListening();
@@ -289,7 +314,7 @@ export function useSpeechAndAudio({
 
   const retryMicPermission = useCallback(async () => {
     setMicErrorMessage(null);
-    const ok = await startVisualizer();
+    const ok = await startVisualizer(false);
     if (ok) {
       stopVisualizer();
     }
@@ -327,7 +352,8 @@ export function useSpeechAndAudio({
       utterance.rate = rate;
       utterance.pitch = pitch;
 
-      const voices = window.speechSynthesis.getVoices();
+      const voices =
+        voicesRef.current.length > 0 ? voicesRef.current : window.speechSynthesis.getVoices();
       const lowerCode = targetLangCode.toLowerCase();
       const baseIso = lowerCode.split('-')[0];
       const matchedVoice =

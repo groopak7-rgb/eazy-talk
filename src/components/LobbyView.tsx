@@ -151,23 +151,23 @@ export function LobbyView({
         </div>
       </header>
 
-      <main id="top" className="max-w-7xl mx-auto px-4 sm:px-8 py-10 sm:py-14 space-y-16">
+      <main id="top" className="max-w-7xl mx-auto px-4 sm:px-8 py-6 sm:py-14 space-y-10 sm:space-y-16">
         {/* Hero Split: Story & Photo Left + Create/Join Room Card Right */}
-        <section className="grid lg:grid-cols-12 gap-8 lg:gap-10 items-stretch">
-          <div className="lg:col-span-6 flex flex-col justify-between gap-6">
-            <div className="space-y-4">
-              <p className="text-sm font-semibold text-teal-700 dark:text-teal-400">
+        <section className="grid lg:grid-cols-12 gap-6 lg:gap-10 items-stretch">
+          <div className="lg:col-span-6 min-w-0 flex flex-col justify-between gap-5 sm:gap-6">
+            <div className="space-y-3 sm:space-y-4">
+              <p className="text-xs sm:text-sm font-semibold text-teal-700 dark:text-teal-400">
                 Any Language, One Easy Conversation
               </p>
-              <h1 className="font-display text-3xl sm:text-5xl font-extrabold tracking-tight text-slate-900 dark:text-slate-100 leading-tight text-balance">
+              <h1 className="font-display text-2xl sm:text-5xl font-extrabold tracking-tight text-slate-900 dark:text-slate-100 leading-tight text-balance">
                 Speak in your language. Everyone hears theirs.
               </h1>
-              <p className="text-base sm:text-lg text-slate-600 dark:text-slate-300 leading-relaxed max-w-xl">
+              <p className="text-sm sm:text-lg text-slate-600 dark:text-slate-300 leading-relaxed max-w-xl">
                 Hold effortless two-way or group voice conversations across 16 Indian regional and
                 global languages inside a shared browser room—with side-by-side text verification
                 and spoken playback.
               </p>
-              <div className="flex flex-wrap items-center gap-3 text-xs font-medium text-slate-600 dark:text-slate-400">
+              <div className="flex flex-wrap items-center gap-2 sm:gap-3 text-xs font-medium text-slate-600 dark:text-slate-400">
                 <span>Zero app installation</span>
                 <span aria-hidden="true">·</span>
                 <span>Live browser microphone &amp; TTS</span>
@@ -176,8 +176,8 @@ export function LobbyView({
               </div>
             </div>
 
-            {/* Warm Documentary Hero Image with Fallback */}
-            <div className="relative rounded-2xl overflow-hidden border border-slate-200 dark:border-slate-800 bg-slate-200 dark:bg-slate-800 aspect-4/3 max-h-[320px] w-full">
+            {/* Warm Documentary Hero Image with Fallback (hidden on small phones so Create/Join is immediate) */}
+            <div className="hidden sm:block relative rounded-2xl overflow-hidden border border-slate-200 dark:border-slate-800 bg-slate-200 dark:bg-slate-800 aspect-4/3 max-h-[320px] w-full">
               {!heroImgFailed ? (
                 <img
                   src="/src/assets/images/easytalk_hero_conversation_1794732739092.jpg"
@@ -203,8 +203,8 @@ export function LobbyView({
           </div>
 
           {/* Right Column: Prominent Dual-Tab Create / Join Room Card */}
-          <div className="lg:col-span-6 flex items-stretch">
-            <div className="w-full rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-800/70 shadow-sm p-6 sm:p-8 flex flex-col justify-between">
+          <div className="lg:col-span-6 min-w-0 flex items-stretch">
+            <div className="w-full min-w-0 rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-800/70 shadow-sm p-5 sm:p-8 flex flex-col justify-between">
               <div className="space-y-6">
                 {/* Tab Switcher */}
                 <div
@@ -261,7 +261,7 @@ export function LobbyView({
                       value={userName}
                       onChange={(e) => setUserName(e.target.value)}
                       placeholder="e.g., Arun, Dr. Sharma, Lakshmi"
-                      className="w-full h-12 rounded-xl border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-slate-900 px-4 text-sm text-slate-900 dark:text-slate-100 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                      className="w-full h-12 rounded-xl border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-slate-900 px-4 text-base sm:text-sm text-slate-900 dark:text-slate-100 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-indigo-500"
                     />
                   </div>
 
@@ -514,7 +514,7 @@ export function LobbyView({
             {SUPPORTED_LANGUAGES.map((lang) => (
               <div
                 key={lang.code}
-                className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-800/50 p-4 space-y-1.5"
+                className="min-w-0 rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-800/50 p-4 space-y-1.5"
               >
                 <div className="flex items-baseline justify-between gap-2">
                   <span className="text-base font-bold text-slate-900 dark:text-slate-100">
