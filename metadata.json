@@ -1,0 +1,6 @@
+{
+  "name": "EasyTalk",
+  "description": "Any Language, One Easy Conversation — Real-time multilingual voice-to-voice and text-to-text conversation rooms across Indian regional and global languages.",
+  "requestFramePermissions": ["microphone"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
